@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Twitch Helper - Controls</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 12px; width: 320px; }
+    h1 { font-size: 16px; margin: 0 0 8px; }
+    .card { border: 1px solid #eee; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
+    label { font-size: 13px; }
+    input[type="number"] { width: 90px; padding: 4px 6px; }
+    .hint { font-size: 12px; color: #666; margin-top: 6px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .save-ok { color: #0a7; font-size: 12px; display: none; }
+  </style>
+  <script src="popup.js" defer></script>
+</head>
+<body>
+  <h1>Twitch Helper</h1>
+
+  <div class="card">
+    <strong>Modules</strong>
+    <div class="row">
+      <label for="enableBonus">Claim Channel Points bonus</label>
+      <input id="enableBonus" type="checkbox" />
+    </div>
+    <div class="row">
+      <label for="enableOverlay">Dismiss AdBlock overlay</label>
+      <input id="enableOverlay" type="checkbox" />
+    </div>
+    <div class="row">
+      <label for="enablePredict">Predictions auto-vote</label>
+      <input id="enablePredict" type="checkbox" />
+    </div>
+    <div class="hint">Toggle specific automations for active twitch.tv tabs.</div>
+  </div>
+
+  <div class="card">
+    <strong>Predictions</strong>
+    <div class="row">
+      <label for="strategy">Strategy</label>
+      <select id="strategy">
+        <option value="majority">Majority (higher %)</option>
+        <option value="minority">Minority (lower points)</option>
+        <option value="random">Random</option>
+        <option value="blue">Blue</option>
+        <option value="pink">Pink</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="predictCountdownSec">Bet when timer &lt;= (sec)</label>
+      <input id="predictCountdownSec" type="number" min="0" max="600" step="1" placeholder="e.g. 10" />
+    </div>
+    <div class="hint">Set 10 to wait for 0:10 remaining. Use 0 to bet immediately.</div>
+    <div class="grid">
+      <div>
+        <label for="wagerPercent">% of Max</label>
+        <input id="wagerPercent" type="number" min="0" max="100" step="1" placeholder="e.g. 5" />
+      </div>
+      <div>
+        <label for="wagerFixed">Fixed amount</label>
+        <input id="wagerFixed" type="number" min="0" step="1" placeholder="e.g. 500" />
+      </div>
+    </div>
+    <div class="hint">Fixed amount &gt; 0 overrides the percent value. When both are 0 the script falls back to Twitch quick bet (10).</div>
+  </div>
+
+  <div class="card">
+    <strong>Bonus delay (seconds)</strong>
+    <div class="grid">
+      <div>
+        <label for="bonusMinSec">Minimum</label>
+        <input id="bonusMinSec" type="number" min="1" max="120" step="1" />
+      </div>
+      <div>
+        <label for="bonusMaxSec">Maximum</label>
+        <input id="bonusMaxSec" type="number" min="1" max="120" step="1" />
+      </div>
+    </div>
+    <div class="hint">Default window is 5-20 seconds.</div>
+  </div>
+
+  <div class="row">
+    <span class="save-ok" id="saveOk">Saved</span>
+    <button id="save" type="button">Save</button>
+  </div>
+</body>
+</html>
