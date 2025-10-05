@@ -232,6 +232,16 @@ const PREDICT_HIGHLIGHT_BTN_SEL =
 const REWARDCENTER_DIALOG_SEL =
   '[role="dialog"][aria-labelledby="channel-points-reward-center-header"]';
 
+const REWARDCENTER_CLOSE_SELECTORS = [
+  'button[data-test-selector="community-points-reward-center__close-button"]',
+  'button[data-a-target="community-points-reward-center-modal__close-button"]',
+  'button[data-a-target="modal-close-button"]',
+  'button[data-a-target="close-button"]',
+  'button[aria-label*="Close" i]'
+];
+
+const NO_TIMER_CLOSE_DELAY_MS = 10_000;
+
 const SUMMARY_COLUMN_SEL = '.prediction-summary-outcome';
 const SUMMARY_PERCENT_SEL = '[data-test-selector="prediction-summary-outcome__percentage"], .prediction-summary-outcome__percent-hero';
 const FIXED_BTN_BLUE_SEL = '.fixed-prediction-button--blue';
@@ -471,7 +481,8 @@ function ensureDialogState(dialog) {
       timeoutId: null,
       processing: false,
       done: false,
-      timerCheckAttempts: 0
+      timerCheckAttempts: 0,
+      noTimerCloseId: null
     };
     dialogStates.set(dialog, state);
   }
@@ -507,6 +518,72 @@ function scheduleDialogCheck(dialog, delayMs, reason) {
   if (reason) {
     log(`[Predict] ${reason} (retry in ${Math.round(delay / 1000)}s)`);
   }
+}
+
+function cancelNoTimerClose(state) {
+  if (!state) return;
+  if (state.noTimerCloseId != null) {
+    clearTimeout(state.noTimerCloseId);
+    pendingPredictionTimers.delete(state.noTimerCloseId);
+    state.noTimerCloseId = null;
+  }
+}
+
+function findRewardCenterCloseButton(dialog) {
+  for (const sel of REWARDCENTER_CLOSE_SELECTORS) {
+    const btn = dialog.querySelector(sel) || dialog.parentElement?.querySelector(sel);
+    if (btn && visible(btn)) return btn;
+  }
+  return null;
+}
+
+function scheduleNoTimerClose(dialog, state) {
+  if (!state) state = ensureDialogState(dialog);
+  if (state.noTimerCloseId != null) return;
+
+  const timeoutId = setTimeout(() => {
+    pendingPredictionTimers.delete(timeoutId);
+    const current = ensureDialogState(dialog);
+    current.noTimerCloseId = null;
+
+    if (!dialog?.isConnected) {
+      log('[Predict] Dialog already absent before no-timer close');
+      return;
+    }
+
+    let closed = false;
+    const closeBtn = findRewardCenterCloseButton(dialog);
+    if (closeBtn) {
+      try {
+        const evt = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+        closeBtn.dispatchEvent(evt);
+        if (dialog.isConnected) {
+          closeBtn.click();
+        }
+        closed = true;
+      } catch (err) {
+        console.warn('[Predict] Close button click failed:', err);
+      }
+    }
+
+    if (!closed && dialog?.isConnected) {
+      dialog.remove();
+      closed = true;
+    }
+
+    current.done = true;
+    current.processing = false;
+    current.waiting = false;
+    if (closed) {
+      log('[Predict] Closed prediction dialog after missing timer for 10s');
+    } else {
+      log('[Predict] Failed to close prediction dialog after missing timer for 10s');
+    }
+  }, NO_TIMER_CLOSE_DELAY_MS);
+
+  state.noTimerCloseId = timeoutId;
+  pendingPredictionTimers.add(timeoutId);
+  log(`[Predict] Timer missing; will close dialog in ${NO_TIMER_CLOSE_DELAY_MS / 1000}s`);
 }
 
 function pickSideByStrategy(dialog) {
@@ -693,23 +770,47 @@ async function handleRewardCenterDialog(dialog) {
   if (state.done) return;
   if (state.processing) return;
 
+  const dialogText = (dialog.textContent || '').toLowerCase();
+  const lockedPhrases = [
+    'submissions closed',
+    'waiting for result',
+    'waiting for outcome',
+    'prediction closed',
+    'prediction complete',
+    'prediction locked'
+  ];
+  if (lockedPhrases.some(phrase => dialogText.includes(phrase))) {
+    scheduleNoTimerClose(dialog, state);
+    return;
+  }
+
   const remaining = getPredictionTimerSeconds(dialog);
   const targetSec = getTargetCountdownSec();
   if (!Number.isFinite(remaining)) {
     state.timerCheckAttempts = (state.timerCheckAttempts || 0) + 1;
+    scheduleNoTimerClose(dialog, state);
     if (state.timerCheckAttempts <= MAX_TIMER_SEARCH_ATTEMPTS) {
       const retryDelay = Math.min(2000, 300 + state.timerCheckAttempts * 150);
       scheduleDialogCheck(dialog, retryDelay, 'Timer not visible yet');
       return;
     }
-    log('[Predict] Timer not found; proceeding without countdown guard.');
-  } else {
-    state.timerCheckAttempts = 0;
-    if (remaining > targetSec) {
-      const waitMs = Math.max((remaining - targetSec) * 1000, 500);
-      scheduleDialogCheck(dialog, waitMs, `Timer at ${remaining}s (target ${targetSec}s)`);
-      return;
-    }
+    log('[Predict] Timer not found; waiting for auto-close.');
+    return;
+  }
+
+  state.timerCheckAttempts = 0;
+
+  if (remaining <= 0) {
+    scheduleNoTimerClose(dialog, state);
+    log('[Predict] Timer at 0s; waiting for auto-close.');
+    return;
+  }
+
+  cancelNoTimerClose(state);
+  if (remaining > targetSec) {
+    const waitMs = Math.max((remaining - targetSec) * 1000, 500);
+    scheduleDialogCheck(dialog, waitMs, `Timer at ${remaining}s (target ${targetSec}s)`);
+    return;
   }
 
   if (state.timeoutId != null) {
@@ -722,12 +823,6 @@ async function handleRewardCenterDialog(dialog) {
 
   try {
     const side = pickSideByStrategy(dialog);
-    const txt = (dialog.textContent || '').toLowerCase();
-    if (txt.includes('locked') || txt.includes('0:00')) {
-      log('[Predict] locked, skip');
-      state.done = true;
-      return;
-    }
 
     await clickWithHumanDelay(dialog, 300, 700);
     const wagerResult = await setWager(dialog, side);
