@@ -830,6 +830,7 @@ async function handleRewardCenterDialog(dialog) {
     state.done = true;
     if (ok) {
       lastPredictTs = Date.now();
+      scheduleNoTimerClose(dialog, state);
     }
   } catch (e) {
     state.done = true;
@@ -941,3 +942,6 @@ function boot() {
 }
 
 waitForBody(loadSettings);
+
+
+
