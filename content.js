@@ -44,6 +44,16 @@ function debugPredict(step, data = {}) {
   console.debug('[TwitchHelper] [PredictDebug]', step, data);
 }
 
+const debugThrottleTs = new Map();
+function debugPredictThrottled(key, step, data = {}, intervalMs = 10_000) {
+  if (!CFG.enableDebug) return;
+  const now = Date.now();
+  const last = debugThrottleTs.get(key) || 0;
+  if (now - last < intervalMs) return;
+  debugThrottleTs.set(key, now);
+  debugPredict(step, data);
+}
+
 function debugElement(label, el) {
   if (!CFG.enableDebug) return;
   if (!el) {
@@ -293,6 +303,8 @@ const REWARDCENTER_CLOSE_SELECTORS = [
 ];
 
 const NO_TIMER_CLOSE_DELAY_MS = 10_000;
+const PREDICT_POLL_INTERVAL_MS = 8_000;
+const MIN_PREDICTION_WAGER = 10;
 
 const SUMMARY_COLUMN_SEL = '.prediction-summary-outcome';
 const SUMMARY_PERCENT_SEL = '[data-test-selector="prediction-summary-outcome__percentage"], .prediction-summary-outcome__percent-hero';
@@ -302,6 +314,7 @@ const CUSTOM_TOGGLE_SEL = 'button[data-test-selector="prediction-checkout-active
 const WAGER_INPUT_CANDIDATES = [
   'input[data-a-target="community-prediction-wager-input"]',
   'input[data-test-selector="prediction-wager-input"]',
+  'input[data-a-target="tw-input"]',
   'input[aria-label*="Predict" i]',
   'input[type="number"]'
 ];
@@ -327,6 +340,7 @@ const PREDICTION_DIALOG_MARKER_SEL = [
   CUSTOM_PREDICTION_CONTAINER_SEL,
   'input[data-a-target="community-prediction-wager-input"]',
   'input[data-test-selector="prediction-wager-input"]',
+  'input[data-a-target="tw-input"]',
   '[data-test-selector="prediction-checkout-header__time-remaining"]'
 ].join(',');
 
@@ -388,7 +402,7 @@ function parsePointsValue(text) {
 
   const cleaned = sanitized.replace(/\(.*?\)/g, ' ');
   let best = null;
-  const re = /(\d+(?:[.,\s]\d+)?)(?:\s*([kmb]))?/ig;
+  const re = /(\d+(?:[.,\s]\d+)*)(?:\s*([kmb]))?/ig;
   for (const match of cleaned.matchAll(re)) {
     let raw = match[1];
     if (!raw) continue;
@@ -397,7 +411,10 @@ function parsePointsValue(text) {
     if (suffix) {
       valueStr = valueStr.replace(',', '.');
     } else {
-      valueStr = valueStr.replace(/,/g, '');
+      valueStr = valueStr.replace(/[,\s]/g, '');
+      if (/^\d{1,3}(?:\.\d{3})+$/.test(valueStr)) {
+        valueStr = valueStr.replace(/\./g, '');
+      }
     }
     const num = parseFloat(valueStr);
     if (!Number.isFinite(num)) continue;
@@ -471,17 +488,43 @@ const TIMER_KEYWORDS = [
   'closes in',
   'lock in',
   'closing in',
+  'remaining',
+  'left',
   'прогноз',
   'лишилось',
   'залишилось'
 ];
 
+function normalizeTimerText(text) {
+  return String(text || '')
+    .replace(/\u00a0|\u202f/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function parseCountdownSeconds(text) {
   if (!text) return null;
-  const cleaned = String(text)
-    .replace(/\u00a0|\u202f/g, ' ')
-    .trim();
+  const cleaned = normalizeTimerText(text);
   if (!cleaned) return null;
+
+  const hourMinSec = cleaned.match(/(\d+)\s*h(?:ours?)?\s*(\d+)\s*m(?:in(?:ute)?s?)?\s*(\d+)\s*s(?:ec(?:ond)?s?)?/i);
+  if (hourMinSec) {
+    const hours = parseInt(hourMinSec[1], 10);
+    const minutes = parseInt(hourMinSec[2], 10);
+    const seconds = parseInt(hourMinSec[3], 10);
+    if (Number.isFinite(hours) && Number.isFinite(minutes) && Number.isFinite(seconds)) {
+      return hours * 3600 + minutes * 60 + seconds;
+    }
+  }
+
+  const hourMin = cleaned.match(/(\d+)\s*h(?:ours?)?\s*(\d+)\s*m(?:in(?:ute)?s?)?/i);
+  if (hourMin) {
+    const hours = parseInt(hourMin[1], 10);
+    const minutes = parseInt(hourMin[2], 10);
+    if (Number.isFinite(hours) && Number.isFinite(minutes)) {
+      return hours * 3600 + minutes * 60;
+    }
+  }
 
   const mm = cleaned.match(/(\d+)\s*:\s*(\d{2})/);
   if (mm) {
@@ -516,14 +559,26 @@ function parseCountdownSeconds(text) {
   return null;
 }
 
+function isBareTimerText(text) {
+  const cleaned = normalizeTimerText(text);
+  if (!cleaned || cleaned.length > 24) return false;
+  return /^(\d+\s*:\s*\d{2}|\d+\s*(h|m|s|sec|secs|second|seconds|minute|minutes)\b)/i.test(cleaned);
+}
+
 function getPredictionTimerSeconds(dialog) {
   for (const sel of PREDICTION_TIMER_SELECTORS) {
     const el = dialog.querySelector(sel);
     if (!el) continue;
-    const info = el.textContent || el.getAttribute?.('aria-label') || '';
-    const secs = parseCountdownSeconds(info);
-    debugPredict('timer-candidate', { selector: sel, text: compactText(info), parsed: secs });
-    if (secs != null) return secs;
+    const sources = [
+      el.textContent || '',
+      el.getAttribute?.('aria-label') || '',
+      el.getAttribute?.('title') || ''
+    ];
+    for (const info of sources) {
+      const secs = parseCountdownSeconds(info);
+      debugPredict('timer-candidate', { selector: sel, text: compactText(info), parsed: secs });
+      if (secs != null) return secs;
+    }
   }
 
   const nodes = Array.from(dialog.querySelectorAll('time, p, span, div'));
@@ -532,13 +587,14 @@ function getPredictionTimerSeconds(dialog) {
     if (inspected++ > 160) break;
     const sources = [
       el.textContent || '',
-      el.getAttribute?.('aria-label') || ''
+      el.getAttribute?.('aria-label') || '',
+      el.getAttribute?.('title') || ''
     ];
     for (const raw of sources) {
       const text = (raw || '').trim();
       if (!text || !/\d/.test(text)) continue;
       const lower = text.toLowerCase();
-      if (!TIMER_KEYWORDS.some(keyword => lower.includes(keyword))) continue;
+      if (!TIMER_KEYWORDS.some(keyword => lower.includes(keyword)) && !isBareTimerText(text)) continue;
       const secs = parseCountdownSeconds(text);
       debugPredict('timer-fallback-candidate', { text: compactText(text), parsed: secs });
       if (secs != null) return secs;
@@ -566,6 +622,7 @@ function ensureDialogState(dialog) {
 }
 
 const MAX_TIMER_SEARCH_ATTEMPTS = 80;
+const MISSING_TIMER_VOTE_ATTEMPTS = 6;
 
 function getTargetCountdownSec() {
   const raw = Number.parseInt(CFG.predictCountdownSec, 10);
@@ -662,6 +719,41 @@ function scheduleNoTimerClose(dialog, state) {
   log(`[Predict] Timer missing; will close dialog in ${NO_TIMER_CLOSE_DELAY_MS / 1000}s`);
 }
 
+function hasActionablePredictionControls(dialog) {
+  if (!dialog?.isConnected) return false;
+
+  const input = qsOne(dialog, WAGER_INPUT_CANDIDATES);
+  if (input && visible(input) && !input.disabled) return true;
+
+  const quickBlue = dialog.querySelector(FIXED_BTN_BLUE_SEL);
+  const quickPink = dialog.querySelector(FIXED_BTN_PINK_SEL);
+  if ((quickBlue && visible(quickBlue) && !quickBlue.disabled) || (quickPink && visible(quickPink) && !quickPink.disabled)) {
+    return true;
+  }
+
+  return describeCustomPredictionContainers(dialog).some(entry =>
+    entry.voteButton && visible(entry.voteButton) && !entry.voteButton.disabled
+  );
+}
+
+function isPredictionLockedText(text) {
+  const normalized = String(text || '').toLowerCase();
+  const compact = normalized.replace(/\s+/g, ' ');
+  const lockedPhrases = [
+    'submissions closed',
+    'waiting for result',
+    'waiting for outcome',
+    'prediction closed',
+    'prediction complete',
+    'prediction locked',
+    'прийом заявок завершено',
+    'очікуємо на результат',
+    'прием заявок завершен',
+    'ожидаем результат'
+  ];
+  return lockedPhrases.some(phrase => compact.includes(phrase));
+}
+
 function pickSideByStrategy(dialog) {
   const cols = Array.from(dialog.querySelectorAll(SUMMARY_COLUMN_SEL)).filter(visible);
   const blue = cols[0];
@@ -740,7 +832,8 @@ function findPredictionOpenButtons(root = document) {
   }
 
   const result = Array.from(buttons).filter(btn => !btn.disabled && isVisible(btn));
-  debugPredict('open-buttons', {
+  const debugOpenButtons = result.length ? debugPredict : debugPredictThrottled.bind(null, 'open-buttons-empty');
+  debugOpenButtons('open-buttons', {
     count: result.length,
     buttons: result.slice(0, 5).map(btn => compactText(btn.textContent || btn.getAttribute('aria-label') || '', 120))
   });
@@ -755,7 +848,7 @@ function findPredictionRewardItemButton(root = document) {
       return btn;
     }
   }
-  debugPredict('reward-item-button', { found: false });
+  debugPredictThrottled('reward-item-button-missing', 'reward-item-button', { found: false });
   return null;
 }
 
@@ -765,7 +858,8 @@ function findChannelPointsBalanceButton(root = document) {
     : root.querySelector?.(CHANNEL_POINTS_BALANCE_SEL);
   const btn = balance?.closest('button');
   const result = btn && !btn.disabled && isVisible(btn) ? btn : null;
-  debugElement('balance-button', result);
+  if (result) debugElement('balance-button', result);
+  else debugPredictThrottled('balance-button-missing', 'balance-button', { found: false });
   return result;
 }
 
@@ -813,7 +907,7 @@ function findPredictionDialog(root = document) {
     }
   }
 
-  debugPredict('prediction-dialog', { found: false });
+  debugPredictThrottled('prediction-dialog-missing', 'prediction-dialog', { found: false });
   return null;
 }
 
@@ -822,7 +916,7 @@ async function waitForPredictionDialog(timeout = 6000) {
   while (performance.now() - t0 < timeout) {
     const el = findPredictionDialog();
     if (el) return el;
-    await sleep(100);
+    await sleep(250);
   }
   return null;
 }
@@ -856,6 +950,41 @@ async function clickWithHumanDelay(btn, min=800,max=1800){
   return d;
 }
 
+function setControlledInputValue(input, value) {
+  if (!input) return false;
+  const next = String(value);
+  const proto = Object.getPrototypeOf(input);
+  const valueSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+  const ownValueSetter = Object.getOwnPropertyDescriptor(input, 'value')?.set;
+
+  input.focus?.();
+  input.click?.();
+
+  if (valueSetter && ownValueSetter !== valueSetter) {
+    valueSetter.call(input, next);
+  } else {
+    input.value = next;
+  }
+
+  try {
+    input.setSelectionRange?.(next.length, next.length);
+  } catch (_) {
+    // Some number inputs do not support text selection.
+  }
+
+  input.dispatchEvent(new InputEvent('input', {
+    bubbles: true,
+    cancelable: true,
+    inputType: 'insertText',
+    data: next
+  }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  input.blur?.();
+  input.focus?.();
+
+  return input.value === next;
+}
+
 async function ensureCustomInput(dialog, side) {
   const grab = () => {
     const entries = describeCustomPredictionContainers(dialog);
@@ -881,6 +1010,17 @@ async function ensureCustomInput(dialog, side) {
   return { input: null, entry: null };
 }
 
+function getChannelPointsBalanceValue() {
+  const balance = document.querySelector(CHANNEL_POINTS_BALANCE_SEL);
+  const value = parsePointsValue(balance?.textContent || '');
+  debugPredict('balance-value', {
+    found: !!balance,
+    text: compactText(balance?.textContent || ''),
+    value
+  });
+  return value;
+}
+
 async function setWager(dialog, side) {
   const FIX = parseInt(CFG.wagerFixed || 0, 10) || 0;
   const PCT = parseInt(CFG.wagerPercent || 0, 10) || 0;
@@ -898,11 +1038,10 @@ async function setWager(dialog, side) {
     const targetEntry = entry || pickCustomPredictionEntry(describeCustomPredictionContainers(dialog), side);
 
     if (FIX > 0) {
-      input.focus();
-      input.value = String(FIX);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const wrote = setControlledInputValue(input, FIX);
+      await sleep(100);
       log('[Predict] Fixed wager', FIX);
-      debugPredict('set-wager:fixed', { value: FIX });
+      debugPredict('set-wager:fixed', { value: FIX, inputValue: input.value, wrote });
       return { mode: 'custom', entry: targetEntry };
     }
 
@@ -925,17 +1064,16 @@ async function setWager(dialog, side) {
       }
 
       if (!maxVal) {
-        log('[Predict] Unable to detect balance for percent wager; fallback to quick.');
-        debugPredict('set-wager:fallback', { reason: 'no-max-balance' });
-        return 'use-quick';
+        maxVal = getChannelPointsBalanceValue() || 0;
       }
 
-      const desired = Math.max(1, Math.floor(maxVal * PCT / 100));
-      input.focus();
-      input.value = String(desired);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      log(`[Predict] Max=${maxVal} -> ${desired} (${PCT}%)`);
-      debugPredict('set-wager:percent', { max: maxVal, desired, percent: PCT });
+      const desired = maxVal
+        ? Math.max(MIN_PREDICTION_WAGER, Math.floor(maxVal * PCT / 100))
+        : MIN_PREDICTION_WAGER;
+      const wrote = setControlledInputValue(input, desired);
+      await sleep(100);
+      log(`[Predict] Max=${maxVal || 'unknown'} -> ${desired} (${PCT}%)`);
+      debugPredict('set-wager:percent', { max: maxVal || null, desired, percent: PCT, inputValue: input.value, wrote });
       return { mode: 'custom', entry: targetEntry };
     }
   }
@@ -998,6 +1136,12 @@ async function handleRewardCenterDialog(dialog) {
   }
 
   const state = ensureDialogState(dialog);
+  const dialogText = (dialog.textContent || '').toLowerCase();
+  if (isPredictionLockedText(dialogText)) {
+    debugPredict('handle-dialog:locked', { text: compactText(dialogText) });
+    scheduleNoTimerClose(dialog, state);
+    return;
+  }
   if (state.done) {
     debugPredict('handle-dialog:skip', { reason: 'done' });
     return;
@@ -1007,46 +1151,35 @@ async function handleRewardCenterDialog(dialog) {
     return;
   }
 
-  const dialogText = (dialog.textContent || '').toLowerCase();
-  const lockedPhrases = [
-    'submissions closed',
-    'waiting for result',
-    'waiting for outcome',
-    'prediction closed',
-    'prediction complete',
-    'prediction locked'
-  ];
-  if (lockedPhrases.some(phrase => dialogText.includes(phrase))) {
-    debugPredict('handle-dialog:locked', { text: compactText(dialogText) });
-    scheduleNoTimerClose(dialog, state);
-    return;
-  }
-
   const remaining = getPredictionTimerSeconds(dialog);
   const targetSec = getTargetCountdownSec();
   debugPredict('handle-dialog:timer', { remaining, targetSec });
   if (!Number.isFinite(remaining)) {
     state.timerCheckAttempts = (state.timerCheckAttempts || 0) + 1;
-    scheduleNoTimerClose(dialog, state);
-    if (state.timerCheckAttempts <= MAX_TIMER_SEARCH_ATTEMPTS) {
+    if (hasActionablePredictionControls(dialog) && state.timerCheckAttempts >= MISSING_TIMER_VOTE_ATTEMPTS) {
+      log('[Predict] Timer not visible; voting because prediction controls are ready.');
+      debugPredict('handle-dialog:timer-missing-actionable', { attempts: state.timerCheckAttempts });
+    } else if (state.timerCheckAttempts <= MAX_TIMER_SEARCH_ATTEMPTS) {
       const retryDelay = Math.min(2000, 300 + state.timerCheckAttempts * 150);
       scheduleDialogCheck(dialog, retryDelay, 'Timer not visible yet');
       return;
+    } else {
+      scheduleNoTimerClose(dialog, state);
+      log('[Predict] Timer not found; waiting for auto-close.');
+      return;
     }
-    log('[Predict] Timer not found; waiting for auto-close.');
-    return;
+  } else {
+    state.timerCheckAttempts = 0;
   }
 
-  state.timerCheckAttempts = 0;
-
-  if (remaining <= 0) {
+  if (Number.isFinite(remaining) && remaining <= 0) {
     scheduleNoTimerClose(dialog, state);
     log('[Predict] Timer at 0s; waiting for auto-close.');
     return;
   }
 
   cancelNoTimerClose(state);
-  if (remaining > targetSec) {
+  if (Number.isFinite(remaining) && remaining > targetSec) {
     const waitMs = Math.max((remaining - targetSec) * 1000, 500);
     scheduleDialogCheck(dialog, waitMs, `Timer at ${remaining}s (target ${targetSec}s)`);
     return;
@@ -1179,7 +1312,7 @@ function startPredict() {
   // Periodically check for an already open reward center dialog
   predictPollId = setInterval(() => {
     if (!CFG.enablePredict) return;
-    debugPredict('poll');
+    debugPredictThrottled('poll-idle', 'poll', {}, 30_000);
     const d = findPredictionDialog();
     if (d) {
       handleRewardCenterDialog(d);
@@ -1201,7 +1334,7 @@ function startPredict() {
         scheduleOpenPrediction(balanceBtn);
       }
     }
-  }, 4000);
+  }, PREDICT_POLL_INTERVAL_MS);
 
   log('[Predict] started');
 }
