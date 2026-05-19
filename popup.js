@@ -2,6 +2,7 @@ const DEFAULTS = {
   enableBonus: true,
   enableOverlay: true,
   enablePredict: false,
+  enableDebug: false,
 
   strategy: 'majority',      // 'majority'|'minority'|'random'|'blue'|'pink'
   wagerPercent: 5,           // 0..100
@@ -45,6 +46,7 @@ function load() {
     setChecked('enableBonus', stored.enableBonus);
     setChecked('enableOverlay', stored.enableOverlay);
     setChecked('enablePredict', stored.enablePredict);
+    setChecked('enableDebug', stored.enableDebug);
 
     setValue('strategy', stored.strategy || DEFAULTS.strategy);
     setValue('wagerPercent', Number.isFinite(stored.wagerPercent) ? stored.wagerPercent : DEFAULTS.wagerPercent);
@@ -61,6 +63,7 @@ function save() {
     enableBonus: getChecked('enableBonus', DEFAULTS.enableBonus),
     enableOverlay: getChecked('enableOverlay', DEFAULTS.enableOverlay),
     enablePredict: getChecked('enablePredict', DEFAULTS.enablePredict),
+    enableDebug: getChecked('enableDebug', DEFAULTS.enableDebug),
 
     strategy: ( $('strategy')?.value ) || DEFAULTS.strategy,
     wagerPercent: getNumber('wagerPercent', DEFAULTS.wagerPercent),
@@ -103,7 +106,7 @@ function bindEvents() {
   $('save')?.addEventListener('click', save);
 
   // Auto-save whenever a control changes (even without clicking Save)
-  ['enableBonus','enableOverlay','enablePredict','strategy','wagerPercent','wagerFixed','predictCountdownSec','bonusMinSec','bonusMaxSec']
+  ['enableBonus','enableOverlay','enablePredict','enableDebug','strategy','wagerPercent','wagerFixed','predictCountdownSec','bonusMinSec','bonusMaxSec']
     .forEach(id => {
       const el = $(id);
       if (el) el.addEventListener('change', save);

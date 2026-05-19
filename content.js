@@ -7,6 +7,7 @@ const DEFAULTS = {
   enableBonus: true,
   enableOverlay: true,
   enablePredict: false,
+  enableDebug: false,
 
   strategy: 'majority',   // 'majority'|'minority'|'random'|'blue'|'pink'
   wagerPercent: 5,        // 0..100
@@ -37,6 +38,46 @@ chrome.storage?.onChanged?.addListener((changes, area) => {
 // ========= utils =========
 const log = (...a) => console.debug('[TwitchHelper]', ...a);
 const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+function debugPredict(step, data = {}) {
+  if (!CFG.enableDebug) return;
+  console.debug('[TwitchHelper] [PredictDebug]', step, data);
+}
+
+function debugElement(label, el) {
+  if (!CFG.enableDebug) return;
+  if (!el) {
+    debugPredict(label, { found: false });
+    return;
+  }
+  const rect = el.getBoundingClientRect?.();
+  debugPredict(label, {
+    found: true,
+    tag: el.tagName,
+    disabled: !!el.disabled,
+    visible: isVisible(el),
+    text: compactText(el.textContent || ''),
+    html: compactHtml(el)
+  });
+  if (rect) {
+    debugPredict(label + ':rect', {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    });
+  }
+}
+
+function compactText(text, max = 240) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  return clean.length > max ? clean.slice(0, max) + '...' : clean;
+}
+
+function compactHtml(el, max = 700) {
+  const html = String(el?.outerHTML || '').replace(/\s+/g, ' ').trim();
+  return html.length > max ? html.slice(0, max) + '...' : html;
+}
 
 function isVisible(el) {
   if (!el || !el.isConnected) return false;
@@ -216,6 +257,7 @@ let predictOpenObserver = null;
 let rewardCenterObserver = null;
 let predictPollId = null;
 let lastPredictTs = 0;
+let lastPredictOpenAttemptTs = 0;
 const scheduledOpenPredict = new WeakSet();
 let dialogStates = new WeakMap();
 const pendingPredictionTimers = new Set();
@@ -228,6 +270,16 @@ const PREDICTION_ROOT_SEL = [
 
 const PREDICT_HIGHLIGHT_BTN_SEL =
   'button[data-test-selector="community-prediction-highlight-header__action-button"]';
+
+const CHANNEL_POINTS_BALANCE_SEL =
+  '[data-test-selector="copo-balance-string"]';
+
+const PREDICTION_REWARD_ITEM_SEL = [
+  '.predictions-list-item',
+  '[data-test-selector="predictions-list-item__title"]',
+  '[data-test-selector="predictions-list-item__subtitle"]',
+  '[data-test-selector="predictions-list-item__total-points"]'
+].join(',');
 
 const REWARDCENTER_DIALOG_SEL =
   '[role="dialog"][aria-labelledby="channel-points-reward-center-header"]';
@@ -267,6 +319,16 @@ const SUBMIT_BTN_CANDIDATES = [
 
 const CUSTOM_PREDICTION_CONTAINER_SEL = '.custom-prediction-button';
 const CUSTOM_PREDICTION_INTERACTIVE_SEL = '.custom-prediction-button__interactive';
+
+const PREDICTION_DIALOG_MARKER_SEL = [
+  SUMMARY_COLUMN_SEL,
+  FIXED_BTN_BLUE_SEL,
+  FIXED_BTN_PINK_SEL,
+  CUSTOM_PREDICTION_CONTAINER_SEL,
+  'input[data-a-target="community-prediction-wager-input"]',
+  'input[data-test-selector="prediction-wager-input"]',
+  '[data-test-selector="prediction-checkout-header__time-remaining"]'
+].join(',');
 
 function describeCustomPredictionContainers(dialog) {
   return Array.from(dialog.querySelectorAll(CUSTOM_PREDICTION_CONTAINER_SEL))
@@ -397,11 +459,22 @@ const PREDICTION_TIMER_SELECTORS = [
   '[data-test-selector="prediction-timer__time-remaining"]',
   '[data-test-selector="progress-bar__time-remaining"]',
   '[data-test-selector="prediction-checkout-header__time-remaining"]',
+  '[data-test-selector="predictions-list-item__subtitle"]',
   '[data-test-selector*="countdown"]',
   'time[data-test-selector*="countdown"]'
 ];
 
-const TIMER_KEYWORDS = ['closing', 'closes', 'close in', 'closes in', 'lock in', 'closing in'];
+const TIMER_KEYWORDS = [
+  'closing',
+  'closes',
+  'close in',
+  'closes in',
+  'lock in',
+  'closing in',
+  'прогноз',
+  'лишилось',
+  'залишилось'
+];
 
 function parseCountdownSeconds(text) {
   if (!text) return null;
@@ -449,6 +522,7 @@ function getPredictionTimerSeconds(dialog) {
     if (!el) continue;
     const info = el.textContent || el.getAttribute?.('aria-label') || '';
     const secs = parseCountdownSeconds(info);
+    debugPredict('timer-candidate', { selector: sel, text: compactText(info), parsed: secs });
     if (secs != null) return secs;
   }
 
@@ -466,10 +540,12 @@ function getPredictionTimerSeconds(dialog) {
       const lower = text.toLowerCase();
       if (!TIMER_KEYWORDS.some(keyword => lower.includes(keyword))) continue;
       const secs = parseCountdownSeconds(text);
+      debugPredict('timer-fallback-candidate', { text: compactText(text), parsed: secs });
       if (secs != null) return secs;
     }
   }
 
+  debugPredict('timer', { found: false });
   return null;
 }
 
@@ -596,6 +672,7 @@ function pickSideByStrategy(dialog) {
   const pinkPct = pink ? parsePct(pink) : null;
 
   const strategy = CFG.strategy || 'majority';
+  debugPredict('side-inputs', { strategy, bluePoints, pinkPoints, bluePct, pinkPct });
   if (strategy === 'blue') return 'blue';
   if (strategy === 'pink') return 'pink';
   if (strategy === 'random') return Math.random() < 0.5 ? 'blue' : 'pink';
@@ -636,9 +713,146 @@ function qsOne(root, candidates) {
   return null;
 }
 
+function findPredictionOpenButtons(root = document) {
+  const buttons = new Set();
+
+  const highlightRoot = root instanceof Element && root.matches?.(PREDICT_HIGHLIGHT_BTN_SEL)
+    ? [root]
+    : [];
+  for (const btn of highlightRoot.concat(Array.from(root.querySelectorAll?.(PREDICT_HIGHLIGHT_BTN_SEL) || []))) {
+    if (btn instanceof HTMLButtonElement) buttons.add(btn);
+  }
+
+  const balanceRoots = root instanceof Element && root.matches?.(CHANNEL_POINTS_BALANCE_SEL)
+    ? [root]
+    : [];
+  for (const balance of balanceRoots.concat(Array.from(root.querySelectorAll?.(CHANNEL_POINTS_BALANCE_SEL) || []))) {
+    const btn = balance.closest('button');
+    if (btn) buttons.add(btn);
+  }
+
+  const itemRoots = root instanceof Element && root.matches?.(PREDICTION_REWARD_ITEM_SEL)
+    ? [root]
+    : [];
+  for (const item of itemRoots.concat(Array.from(root.querySelectorAll?.(PREDICTION_REWARD_ITEM_SEL) || []))) {
+    const btn = item.closest('button');
+    if (btn) buttons.add(btn);
+  }
+
+  const result = Array.from(buttons).filter(btn => !btn.disabled && isVisible(btn));
+  debugPredict('open-buttons', {
+    count: result.length,
+    buttons: result.slice(0, 5).map(btn => compactText(btn.textContent || btn.getAttribute('aria-label') || '', 120))
+  });
+  return result;
+}
+
+function findPredictionRewardItemButton(root = document) {
+  for (const item of Array.from(root.querySelectorAll?.(PREDICTION_REWARD_ITEM_SEL) || [])) {
+    const btn = item.closest('button');
+    if (btn && !btn.disabled && isVisible(btn)) {
+      debugElement('reward-item-button', btn);
+      return btn;
+    }
+  }
+  debugPredict('reward-item-button', { found: false });
+  return null;
+}
+
+function findChannelPointsBalanceButton(root = document) {
+  const balance = root instanceof Element && root.matches?.(CHANNEL_POINTS_BALANCE_SEL)
+    ? root
+    : root.querySelector?.(CHANNEL_POINTS_BALANCE_SEL);
+  const btn = balance?.closest('button');
+  const result = btn && !btn.disabled && isVisible(btn) ? btn : null;
+  debugElement('balance-button', result);
+  return result;
+}
+
+function hasPredictionDialogMarkers(root) {
+  return !!(
+    root instanceof Element && root.matches?.(PREDICTION_DIALOG_MARKER_SEL) ||
+    root?.querySelector?.(PREDICTION_DIALOG_MARKER_SEL)
+  );
+}
+
+function findPredictionDialog(root = document) {
+  if (root instanceof Element && root.matches?.(REWARDCENTER_DIALOG_SEL) && visible(root) && hasPredictionDialogMarkers(root)) {
+    debugElement('prediction-dialog:strict-self', root);
+    return root;
+  }
+
+  const strict = root.querySelector?.(REWARDCENTER_DIALOG_SEL);
+  if (strict && visible(strict) && hasPredictionDialogMarkers(strict)) {
+    debugElement('prediction-dialog:strict', strict);
+    return strict;
+  }
+
+  const marker = root instanceof Element && root.matches?.(PREDICTION_DIALOG_MARKER_SEL)
+    ? root
+    : root.querySelector?.(PREDICTION_DIALOG_MARKER_SEL);
+  if (marker && visible(marker)) {
+    debugElement('prediction-dialog:marker', marker);
+    const dialog = marker.closest('[role="dialog"]');
+    if (dialog && visible(dialog)) {
+      debugElement('prediction-dialog:by-marker-dialog', dialog);
+      return dialog;
+    }
+
+    const predictionRoot = marker.closest(PREDICTION_ROOT_SEL);
+    if (predictionRoot && visible(predictionRoot)) {
+      debugElement('prediction-dialog:by-marker-root', predictionRoot);
+      return predictionRoot;
+    }
+  }
+
+  for (const dialog of Array.from(root.querySelectorAll?.('[role="dialog"]') || [])) {
+    if (visible(dialog) && hasPredictionDialogMarkers(dialog)) {
+      debugElement('prediction-dialog:any-dialog', dialog);
+      return dialog;
+    }
+  }
+
+  debugPredict('prediction-dialog', { found: false });
+  return null;
+}
+
+async function waitForPredictionDialog(timeout = 6000) {
+  const t0 = performance.now();
+  while (performance.now() - t0 < timeout) {
+    const el = findPredictionDialog();
+    if (el) return el;
+    await sleep(100);
+  }
+  return null;
+}
+
+function clickElement(el) {
+  if (!el || !el.isConnected || el.disabled || !visible(el)) {
+    debugPredict('click-skipped', {
+      hasElement: !!el,
+      connected: !!el?.isConnected,
+      disabled: !!el?.disabled,
+      visible: !!(el && visible(el))
+    });
+    return false;
+  }
+  try {
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+    el.click?.();
+    debugElement('clicked', el);
+    return true;
+  } catch (err) {
+    console.warn('[Predict] Click failed:', err);
+    return false;
+  }
+}
+
 async function clickWithHumanDelay(btn, min=800,max=1800){
   const d = prand(min,max); await sleep(d);
-  if (btn && btn.isConnected && !btn.disabled && visible(btn)) btn.click();
+  clickElement(btn);
   return d;
 }
 
@@ -670,11 +884,14 @@ async function ensureCustomInput(dialog, side) {
 async function setWager(dialog, side) {
   const FIX = parseInt(CFG.wagerFixed || 0, 10) || 0;
   const PCT = parseInt(CFG.wagerPercent || 0, 10) || 0;
+  debugPredict('set-wager:start', { side, fixed: FIX, percent: PCT });
 
   if (FIX > 0 || PCT > 0) {
     const { input, entry } = await ensureCustomInput(dialog, side);
+    debugElement('wager-input', input);
     if (!input) {
       log('[Predict] No input field for custom wager.');
+      debugPredict('set-wager:fallback', { reason: 'no-input' });
       return 'use-quick';
     }
 
@@ -685,6 +902,7 @@ async function setWager(dialog, side) {
       input.value = String(FIX);
       input.dispatchEvent(new Event('input', { bubbles: true }));
       log('[Predict] Fixed wager', FIX);
+      debugPredict('set-wager:fixed', { value: FIX });
       return { mode: 'custom', entry: targetEntry };
     }
 
@@ -708,6 +926,7 @@ async function setWager(dialog, side) {
 
       if (!maxVal) {
         log('[Predict] Unable to detect balance for percent wager; fallback to quick.');
+        debugPredict('set-wager:fallback', { reason: 'no-max-balance' });
         return 'use-quick';
       }
 
@@ -716,22 +935,27 @@ async function setWager(dialog, side) {
       input.value = String(desired);
       input.dispatchEvent(new Event('input', { bubbles: true }));
       log(`[Predict] Max=${maxVal} -> ${desired} (${PCT}%)`);
+      debugPredict('set-wager:percent', { max: maxVal, desired, percent: PCT });
       return { mode: 'custom', entry: targetEntry };
     }
   }
 
   if (document.querySelector(FIXED_BTN_BLUE_SEL) || document.querySelector(FIXED_BTN_PINK_SEL)) {
+    debugPredict('set-wager:quick', { reason: 'fixed-buttons-found' });
     return 'use-quick';
   }
 
+  debugPredict('set-wager:none');
   return false;
 }
 
 async function submitPrediction(dialog, side, wagerResult) {
+  debugPredict('submit:start', { side, wagerResult: typeof wagerResult === 'object' ? wagerResult.mode : wagerResult });
   if (wagerResult && typeof wagerResult === 'object' && wagerResult.mode === 'custom') {
     const entry = wagerResult.entry || pickCustomPredictionEntry(describeCustomPredictionContainers(dialog), side);
     const voteBtn = entry?.voteButton;
     if (voteBtn && visible(voteBtn) && !voteBtn.disabled) {
+      debugElement('submit:custom-vote-button', voteBtn);
       await clickWithHumanDelay(voteBtn, 250, 700);
       log('[Predict] Submitted via custom vote', side);
       return true;
@@ -743,6 +967,7 @@ async function submitPrediction(dialog, side, wagerResult) {
       ? dialog.querySelector(FIXED_BTN_BLUE_SEL)
       : dialog.querySelector(FIXED_BTN_PINK_SEL);
     if (quickBtn && visible(quickBtn)) {
+      debugElement('submit:quick-button', quickBtn);
       await clickWithHumanDelay(quickBtn, 200, 500);
       log('[Predict] Submitted via quick 10', side);
       return true;
@@ -751,24 +976,36 @@ async function submitPrediction(dialog, side, wagerResult) {
 
   const submit = qsOne(dialog, SUBMIT_BTN_CANDIDATES) || dialog.querySelector('button[type="submit"]');
   if (submit && visible(submit) && !submit.disabled) {
+    debugElement('submit:button', submit);
     await clickWithHumanDelay(submit, 250, 700);
     log('[Predict] Submitted.');
     return true;
   }
 
   log('[Predict] Submit not found.');
+  debugPredict('submit:not-found', { dialogHtml: compactHtml(dialog, 1000) });
   return false;
 }
 
 async function handleRewardCenterDialog(dialog) {
   if (!CFG.enablePredict) return;
+  debugElement('handle-dialog:start', dialog);
   const now = Date.now();
   const COOLDOWN = 60_000;
-  if (now - lastPredictTs < COOLDOWN) return;
+  if (now - lastPredictTs < COOLDOWN) {
+    debugPredict('handle-dialog:cooldown', { msLeft: COOLDOWN - (now - lastPredictTs) });
+    return;
+  }
 
   const state = ensureDialogState(dialog);
-  if (state.done) return;
-  if (state.processing) return;
+  if (state.done) {
+    debugPredict('handle-dialog:skip', { reason: 'done' });
+    return;
+  }
+  if (state.processing) {
+    debugPredict('handle-dialog:skip', { reason: 'processing' });
+    return;
+  }
 
   const dialogText = (dialog.textContent || '').toLowerCase();
   const lockedPhrases = [
@@ -780,12 +1017,14 @@ async function handleRewardCenterDialog(dialog) {
     'prediction locked'
   ];
   if (lockedPhrases.some(phrase => dialogText.includes(phrase))) {
+    debugPredict('handle-dialog:locked', { text: compactText(dialogText) });
     scheduleNoTimerClose(dialog, state);
     return;
   }
 
   const remaining = getPredictionTimerSeconds(dialog);
   const targetSec = getTargetCountdownSec();
+  debugPredict('handle-dialog:timer', { remaining, targetSec });
   if (!Number.isFinite(remaining)) {
     state.timerCheckAttempts = (state.timerCheckAttempts || 0) + 1;
     scheduleNoTimerClose(dialog, state);
@@ -823,11 +1062,13 @@ async function handleRewardCenterDialog(dialog) {
 
   try {
     const side = pickSideByStrategy(dialog);
+    debugPredict('handle-dialog:side', { side });
 
     await clickWithHumanDelay(dialog, 300, 700);
     const wagerResult = await setWager(dialog, side);
     const ok = await submitPrediction(dialog, side, wagerResult);
     state.done = true;
+    debugPredict('handle-dialog:submit-result', { ok });
     if (ok) {
       lastPredictTs = Date.now();
       scheduleNoTimerClose(dialog, state);
@@ -842,28 +1083,57 @@ async function handleRewardCenterDialog(dialog) {
 
 async function scheduleOpenPrediction(btn) {
   if (!CFG.enablePredict) return;
-  if (scheduledOpenPredict.has(btn)) return;
+  if (scheduledOpenPredict.has(btn)) {
+    debugPredict('open:skip', { reason: 'already-scheduled' });
+    return;
+  }
   scheduledOpenPredict.add(btn);
+  debugElement('open:scheduled-button', btn);
 
   const d = rand(600, 1600);
+  debugPredict('open:delay', { ms: d });
   setTimeout(async () => {
-    if (!CFG.enablePredict) { scheduledOpenPredict.delete(btn); return; }
-    if (!btn.isConnected || btn.disabled) { scheduledOpenPredict.delete(btn); return; }
+    if (!CFG.enablePredict) {
+      debugPredict('open:abort', { reason: 'disabled' });
+      scheduledOpenPredict.delete(btn);
+      return;
+    }
+    if (!btn.isConnected || btn.disabled) {
+      debugPredict('open:abort', { reason: 'button-unavailable', connected: btn.isConnected, disabled: btn.disabled });
+      scheduledOpenPredict.delete(btn);
+      return;
+    }
     try {
-      btn.click();
-      // Wait for the reward center dialog to appear
-      const dialog = await (async function waitForDialog(timeout=6000){
-        const t0 = performance.now();
-        while (performance.now() - t0 < timeout) {
-          const d = document.querySelector(REWARDCENTER_DIALOG_SEL);
-          if (d && visible(d)) return d;
-          await sleep(100);
+      lastPredictOpenAttemptTs = Date.now();
+      debugPredict('open:click-initial');
+      clickElement(btn);
+
+      let dialog = await waitForPredictionDialog(1500);
+      debugElement('open:dialog-after-initial-click', dialog);
+      if (!dialog) {
+        const predictionItem = await (async function waitForPredictionItem(timeout=5000) {
+          const t0 = performance.now();
+          while (performance.now() - t0 < timeout) {
+            const itemBtn = findPredictionRewardItemButton();
+            if (itemBtn) return itemBtn;
+            await sleep(100);
+          }
+          return null;
+        })();
+        debugElement('open:prediction-item-after-popover', predictionItem);
+        if (predictionItem && predictionItem !== btn) {
+          debugPredict('open:click-prediction-item');
+          await clickWithHumanDelay(predictionItem, 200, 600);
         }
-        return null;
-      })();
+        dialog = await waitForPredictionDialog(6000);
+        debugElement('open:dialog-after-item-click', dialog);
+      }
+
       if (dialog) await handleRewardCenterDialog(dialog);
+      else debugPredict('open:failed', { reason: 'dialog-not-found' });
     } catch(e) {
       console.warn('[Predict] open failed:', e);
+      debugPredict('open:error', { message: String(e?.message || e) });
     } finally {
       setTimeout(()=>scheduledOpenPredict.delete(btn), 4000);
     }
@@ -872,38 +1142,35 @@ async function scheduleOpenPrediction(btn) {
 
 function startPredict() {
   stopPredict();
+  debugPredict('start', {
+    strategy: CFG.strategy,
+    wagerPercent: CFG.wagerPercent,
+    wagerFixed: CFG.wagerFixed,
+    predictCountdownSec: CFG.predictCountdownSec
+  });
 
-  // Watch highlight cards for the Predict button
+  // Watch highlight cards and the channel-points balance button that opens Reward Center.
   predictOpenObserver = new MutationObserver(muts => {
     for (const m of muts) {
       for (const node of m.addedNodes) {
         if (!(node instanceof HTMLElement)) continue;
-        if (node.matches?.(PREDICT_HIGHLIGHT_BTN_SEL)) {
-          if (!node.disabled && isVisible(node)) scheduleOpenPrediction(node);
-          continue;
-        }
-        const btnInside = node.querySelector?.(PREDICT_HIGHLIGHT_BTN_SEL);
-        if (btnInside && !btnInside.disabled && isVisible(btnInside)) {
-          scheduleOpenPrediction(btnInside);
-        }
+        findPredictionOpenButtons(node).forEach(scheduleOpenPrediction);
       }
     }
   });
   predictOpenObserver.observe(document.documentElement, { childList: true, subtree: true });
-  const existingBtn = document.querySelector(PREDICT_HIGHLIGHT_BTN_SEL);
-  if (existingBtn && isVisible(existingBtn) && !existingBtn.disabled) scheduleOpenPrediction(existingBtn);
+  findPredictionOpenButtons().forEach(scheduleOpenPrediction);
 
   // Watch for reward center dialogs
   rewardCenterObserver = new MutationObserver(muts => {
     for (const m of muts) {
       for (const node of m.addedNodes) {
         if (!(node instanceof HTMLElement)) continue;
-        if (node.matches?.(REWARDCENTER_DIALOG_SEL)) {
-          if (visible(node)) handleRewardCenterDialog(node);
+        const directDialog = findPredictionDialog(node);
+        if (directDialog) {
+          handleRewardCenterDialog(directDialog);
           continue;
         }
-        const dialog = node.querySelector?.(REWARDCENTER_DIALOG_SEL);
-        if (dialog && visible(dialog)) handleRewardCenterDialog(dialog);
       }
     }
   });
@@ -912,8 +1179,28 @@ function startPredict() {
   // Periodically check for an already open reward center dialog
   predictPollId = setInterval(() => {
     if (!CFG.enablePredict) return;
-    const d = document.querySelector(REWARDCENTER_DIALOG_SEL);
-    if (d && visible(d)) handleRewardCenterDialog(d);
+    debugPredict('poll');
+    const d = findPredictionDialog();
+    if (d) {
+      handleRewardCenterDialog(d);
+      return;
+    }
+
+    const predictionItem = findPredictionRewardItemButton();
+    if (predictionItem) {
+      debugPredict('poll:prediction-item-found');
+      scheduleOpenPrediction(predictionItem);
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastPredictOpenAttemptTs > 30_000) {
+      const balanceBtn = findChannelPointsBalanceButton();
+      if (balanceBtn) {
+        debugPredict('poll:balance-found');
+        scheduleOpenPrediction(balanceBtn);
+      }
+    }
   }, 4000);
 
   log('[Predict] started');
