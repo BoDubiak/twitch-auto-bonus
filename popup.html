@@ -5,45 +5,327 @@
   <title>Twitch Helper - Controls</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 12px; width: 320px; }
-    h1 { font-size: 16px; margin: 0 0 8px; }
-    .card { border: 1px solid #eee; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
-    .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
-    label { font-size: 13px; }
-    input[type="number"] { width: 90px; padding: 4px 6px; }
-    .hint { font-size: 12px; color: #666; margin-top: 6px; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .save-ok { color: #0a7; font-size: 12px; display: none; }
+    :root {
+      color-scheme: light;
+      --md-primary: #6750a4;
+      --md-on-primary: #ffffff;
+      --md-primary-container: #eaddff;
+      --md-on-primary-container: #21005d;
+      --md-secondary-container: #e8def8;
+      --md-surface: #fffbfe;
+      --md-surface-container: #f3edf7;
+      --md-surface-container-high: #ece6f0;
+      --md-on-surface: #1d1b20;
+      --md-on-surface-variant: #49454f;
+      --md-outline: #79747e;
+      --md-outline-variant: #cac4d0;
+      --md-success: #146c2e;
+      --md-shadow: 0 1px 2px rgba(0, 0, 0, .12), 0 1px 3px rgba(0, 0, 0, .08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 360px;
+      margin: 0;
+      padding: 16px;
+      background: var(--md-surface);
+      color: var(--md-on-surface);
+      font: 400 14px/1.35 Roboto, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    }
+
+    .app-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .app-icon {
+      display: grid;
+      width: 44px;
+      height: 44px;
+      place-items: center;
+      border-radius: 12px;
+      background: var(--md-primary-container);
+      color: var(--md-on-primary-container);
+      box-shadow: var(--md-shadow);
+    }
+
+    .app-icon svg {
+      width: 24px;
+      height: 24px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 500;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin: 2px 0 0;
+      color: var(--md-on-surface-variant);
+      font-size: 12px;
+    }
+
+    .section {
+      margin-bottom: 12px;
+      padding: 16px;
+      border: 1px solid var(--md-outline-variant);
+      border-radius: 8px;
+      background: var(--md-surface-container);
+    }
+
+    .section-title {
+      margin: 0 0 12px;
+      color: var(--md-on-surface);
+      font-size: 16px;
+      font-weight: 500;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 48px;
+      gap: 16px;
+    }
+
+    .row + .row {
+      border-top: 1px solid var(--md-outline-variant);
+    }
+
+    .control-label {
+      display: block;
+      min-width: 0;
+      color: var(--md-on-surface);
+      font-size: 14px;
+      font-weight: 400;
+    }
+
+    .hint {
+      margin: 8px 0 0;
+      color: var(--md-on-surface-variant);
+      font-size: 12px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .field {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .field label,
+    .select-row label {
+      color: var(--md-on-surface-variant);
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    input[type="number"],
+    select {
+      width: 100%;
+      height: 42px;
+      border: 1px solid var(--md-outline);
+      border-radius: 4px;
+      background: var(--md-surface);
+      color: var(--md-on-surface);
+      font: inherit;
+      outline: none;
+      transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
+    }
+
+    input[type="number"] {
+      padding: 0 12px;
+    }
+
+    select {
+      padding: 0 34px 0 12px;
+      appearance: none;
+      background-image:
+        linear-gradient(45deg, transparent 50%, var(--md-on-surface-variant) 50%),
+        linear-gradient(135deg, var(--md-on-surface-variant) 50%, transparent 50%);
+      background-position:
+        calc(100% - 18px) 18px,
+        calc(100% - 13px) 18px;
+      background-size: 5px 5px, 5px 5px;
+      background-repeat: no-repeat;
+    }
+
+    input[type="number"]:focus,
+    select:focus {
+      border-color: var(--md-primary);
+      box-shadow: 0 0 0 1px var(--md-primary);
+    }
+
+    .select-row {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    .switch {
+      position: relative;
+      display: inline-flex;
+      flex: 0 0 auto;
+      width: 52px;
+      height: 32px;
+      align-items: center;
+      cursor: pointer;
+    }
+
+    .switch input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+    }
+
+    .switch-track {
+      position: relative;
+      width: 52px;
+      height: 32px;
+      border: 2px solid var(--md-outline);
+      border-radius: 999px;
+      background: var(--md-surface-container-high);
+      transition: background .15s ease, border-color .15s ease;
+    }
+
+    .switch-track::before {
+      content: "";
+      position: absolute;
+      top: 5px;
+      left: 5px;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--md-outline);
+      transition: transform .15s ease, width .15s ease, height .15s ease, background .15s ease;
+    }
+
+    .switch input:checked + .switch-track {
+      border-color: var(--md-primary);
+      background: var(--md-primary);
+    }
+
+    .switch input:checked + .switch-track::before {
+      width: 24px;
+      height: 24px;
+      background: var(--md-on-primary);
+      transform: translate(18px, -3px);
+    }
+
+    .switch input:focus-visible + .switch-track {
+      outline: 2px solid var(--md-primary);
+      outline-offset: 2px;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 44px;
+      padding-top: 2px;
+    }
+
+    .save-ok {
+      display: none;
+      color: var(--md-success);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 88px;
+      height: 40px;
+      padding: 0 24px;
+      border: 0;
+      border-radius: 20px;
+      background: var(--md-primary);
+      color: var(--md-on-primary);
+      font: 500 14px/1 Roboto, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      cursor: pointer;
+      box-shadow: var(--md-shadow);
+      transition: box-shadow .15s ease, filter .15s ease;
+    }
+
+    button:hover {
+      filter: brightness(1.04);
+      box-shadow: 0 2px 4px rgba(0, 0, 0, .14), 0 3px 8px rgba(0, 0, 0, .10);
+    }
+
+    button:focus-visible {
+      outline: 2px solid var(--md-primary);
+      outline-offset: 2px;
+    }
   </style>
   <script src="popup.js" defer></script>
 </head>
 <body>
-  <h1>Twitch Helper</h1>
+  <header class="app-header">
+    <div class="app-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" role="img">
+        <path fill="currentColor" d="M4 4h16v11.5l-4 4H9.5L7 22v-2.5H4V4Zm2 2v11.5h3v1.7l1.7-1.7H15l3-3V6H6Zm5 3h2v5h-2V9Zm4 0h2v5h-2V9Z" />
+      </svg>
+    </div>
+    <div>
+      <h1>Twitch Helper</h1>
+      <p class="subtitle">Automation controls</p>
+    </div>
+  </header>
 
-  <div class="card">
-    <strong>Modules</strong>
+  <section class="section" aria-labelledby="modulesTitle">
+    <h2 class="section-title" id="modulesTitle">Modules</h2>
     <div class="row">
-      <label for="enableBonus">Claim Channel Points bonus</label>
-      <input id="enableBonus" type="checkbox" />
+      <label class="control-label" for="enableBonus">Claim Channel Points bonus</label>
+      <label class="switch" aria-label="Claim Channel Points bonus">
+        <input id="enableBonus" type="checkbox" />
+        <span class="switch-track"></span>
+      </label>
     </div>
     <div class="row">
-      <label for="enableOverlay">Dismiss AdBlock overlay</label>
-      <input id="enableOverlay" type="checkbox" />
+      <label class="control-label" for="enableOverlay">Dismiss AdBlock overlay</label>
+      <label class="switch" aria-label="Dismiss AdBlock overlay">
+        <input id="enableOverlay" type="checkbox" />
+        <span class="switch-track"></span>
+      </label>
     </div>
     <div class="row">
-      <label for="enablePredict">Predictions auto-vote</label>
-      <input id="enablePredict" type="checkbox" />
+      <label class="control-label" for="enablePredict">Predictions auto-vote</label>
+      <label class="switch" aria-label="Predictions auto-vote">
+        <input id="enablePredict" type="checkbox" />
+        <span class="switch-track"></span>
+      </label>
     </div>
     <div class="row">
-      <label for="enableDebug">Debug logs</label>
-      <input id="enableDebug" type="checkbox" />
+      <label class="control-label" for="enableDebug">Debug logs</label>
+      <label class="switch" aria-label="Debug logs">
+        <input id="enableDebug" type="checkbox" />
+        <span class="switch-track"></span>
+      </label>
     </div>
-    <div class="hint">Toggle specific automations for active twitch.tv tabs.</div>
-  </div>
+    <p class="hint">Toggle specific automations for active twitch.tv tabs.</p>
+  </section>
 
-  <div class="card">
-    <strong>Predictions</strong>
-    <div class="row">
+  <section class="section" aria-labelledby="predictionsTitle">
+    <h2 class="section-title" id="predictionsTitle">Predictions</h2>
+    <div class="select-row">
       <label for="strategy">Strategy</label>
       <select id="strategy">
         <option value="majority">Majority (higher %)</option>
@@ -53,40 +335,39 @@
         <option value="pink">Pink</option>
       </select>
     </div>
-    <div class="row">
-      <label for="predictCountdownSec">Bet when timer &lt;= (sec)</label>
-      <input id="predictCountdownSec" type="number" min="0" max="600" step="1" placeholder="e.g. 10" />
-    </div>
-    <div class="hint">Set 10 to wait for 0:10 remaining. Use 0 to bet immediately.</div>
     <div class="grid">
-      <div>
+      <div class="field">
+        <label for="predictCountdownSec">Timer &lt;= seconds</label>
+        <input id="predictCountdownSec" type="number" min="0" max="600" step="1" placeholder="10" />
+      </div>
+      <div class="field">
         <label for="wagerPercent">% of Max</label>
-        <input id="wagerPercent" type="number" min="0" max="100" step="1" placeholder="e.g. 5" />
+        <input id="wagerPercent" type="number" min="0" max="100" step="1" placeholder="5" />
       </div>
-      <div>
+      <div class="field">
         <label for="wagerFixed">Fixed amount</label>
-        <input id="wagerFixed" type="number" min="0" step="1" placeholder="e.g. 500" />
+        <input id="wagerFixed" type="number" min="0" step="1" placeholder="500" />
       </div>
     </div>
-    <div class="hint">Fixed amount &gt; 0 overrides the percent value. When both are 0 the script falls back to Twitch quick bet (10).</div>
-  </div>
+    <p class="hint">Fixed amount overrides percent. Use 0 to rely on Twitch quick bet.</p>
+  </section>
 
-  <div class="card">
-    <strong>Bonus delay (seconds)</strong>
+  <section class="section" aria-labelledby="bonusTitle">
+    <h2 class="section-title" id="bonusTitle">Bonus delay</h2>
     <div class="grid">
-      <div>
-        <label for="bonusMinSec">Minimum</label>
+      <div class="field">
+        <label for="bonusMinSec">Minimum seconds</label>
         <input id="bonusMinSec" type="number" min="1" max="120" step="1" />
       </div>
-      <div>
-        <label for="bonusMaxSec">Maximum</label>
+      <div class="field">
+        <label for="bonusMaxSec">Maximum seconds</label>
         <input id="bonusMaxSec" type="number" min="1" max="120" step="1" />
       </div>
     </div>
-    <div class="hint">Default window is 5-20 seconds.</div>
-  </div>
+    <p class="hint">Default window is 5-20 seconds.</p>
+  </section>
 
-  <div class="row">
+  <div class="actions">
     <span class="save-ok" id="saveOk">Saved</span>
     <button id="save" type="button">Save</button>
   </div>
